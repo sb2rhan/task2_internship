@@ -1,0 +1,59 @@
+# ==========================================
+# C and C++ Build Artifacts
+# ==========================================
+# Object files and libraries
+*.o
+*.obj
+*.a
+*.lib
+
+# Shared objects and dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Executables (Windows)
+*.exe
+
+# Debugging symbols and dumps
+*.dSYM/
+*.su
+*.idb
+*.pdb
+*.dwo
+
+# ==========================================
+# Go (Golang) Build Artifacts
+# ==========================================
+# Binaries and plugins
+*.exe~
+*.test
+*.prof
+
+# Code coverage profiles and test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Go workspace and local module overrides
+go.work
+go.work.sum
+
+# Dependency directories (Uncomment if you prefer not to vendor)
+# vendor/
+
+# ==========================================
+# Local Environment & Secrets
+# ==========================================
+.env
+.env.local
+
+# ==========================================
+# IDEs and Editors
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
