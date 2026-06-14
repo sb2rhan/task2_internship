@@ -62,9 +62,11 @@ static inline void parse_5tuple(const struct rte_mbuf *m, struct packet_meta *me
     if (eth_type == RTE_ETHER_TYPE_IPV4) {
         struct rte_ipv4_hdr *ipv4_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
         meta->ip_version = 4;
-        meta->ipv4_src = ipv4_hdr->src_addr;
-        meta->ipv4_dst = ipv4_hdr->dst_addr;
-        meta->proto  = ipv4_hdr->next_proto_id;
+        // Cast the start of the 16-byte array to a uint32_t pointer for a direct write
+        *(uint32_t *)meta->ipv4_src = ipv4_hdr->src_addr;
+        *(uint32_t *)meta->ipv4_dst = ipv4_hdr->dst_addr;
+        
+        meta->proto = ipv4_hdr->next_proto_id;
 
         if (meta->proto == IPPROTO_UDP) {
             struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)(ipv4_hdr + 1);
