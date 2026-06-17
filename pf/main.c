@@ -23,18 +23,12 @@
 // 64-byte cache-aligned 5-tuple structure supporting IPv4 and IPv6
 // Must exactly match the struct defined in the Go Analyzer!
 struct __attribute__((__aligned__(64))) packet_meta {
-    union {
-        uint32_t ipv4_src;
-        uint8_t  ipv6_src[16];
-    };
-    union {
-        uint32_t ipv4_dst;
-        uint8_t  ipv6_dst[16];
-    };
+    uint8_t  src_ip[16]; // Changed from uint32_t/union
+    uint8_t  dst_ip[16]; // Changed from uint32_t/union
     uint16_t src_port;
     uint16_t dst_port;
     uint8_t  proto;
-    uint8_t  ip_version;
+    uint8_t  ip_version; 
 };
 
 
@@ -62,9 +56,9 @@ static inline void parse_5tuple(const struct rte_mbuf *m, struct packet_meta *me
     if (eth_type == RTE_ETHER_TYPE_IPV4) {
         struct rte_ipv4_hdr *ipv4_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
         meta->ip_version = 4;
-        // Cast the start of the 16-byte array to a uint32_t pointer for a direct write
-        *(uint32_t *)meta->ipv4_src = ipv4_hdr->src_addr;
-        *(uint32_t *)meta->ipv4_dst = ipv4_hdr->dst_addr;
+        // Copy 4 bytes of IPv4 address into the first 4 bytes of the 16-byte array
+        rte_memcpy(meta->src_ip, &ipv4_hdr->src_addr, 4);
+        rte_memcpy(meta->dst_ip, &ipv4_hdr->dst_addr, 4);
         
         meta->proto = ipv4_hdr->next_proto_id;
 
@@ -80,8 +74,8 @@ static inline void parse_5tuple(const struct rte_mbuf *m, struct packet_meta *me
     } else if (eth_type == RTE_ETHER_TYPE_IPV6) {
         struct rte_ipv6_hdr *ipv6_hdr = (struct rte_ipv6_hdr *)(eth_hdr + 1);
         meta->ip_version = 6;
-        rte_memcpy(meta->ipv6_src, &ipv6_hdr->src_addr, 16);
-        rte_memcpy(meta->ipv6_dst, &ipv6_hdr->dst_addr, 16);
+        rte_memcpy(meta->src_ip, &ipv6_hdr->src_addr, 16);
+        rte_memcpy(meta->dst_ip, &ipv6_hdr->dst_addr, 16);
         meta->proto = ipv6_hdr->proto;
 
         if (meta->proto == IPPROTO_UDP) {
