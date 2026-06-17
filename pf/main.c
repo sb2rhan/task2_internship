@@ -18,7 +18,7 @@
 #define BURST_SIZE 64
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
-#define META_POOL_SIZE 16384
+#define META_POOL_SIZE 262144
 
 // 64-byte cache-aligned 5-tuple structure supporting IPv4 and IPv6
 // Must exactly match the struct defined in the Go Analyzer!
@@ -38,10 +38,11 @@ struct rte_ring *dump_ring = NULL;
 
 volatile bool keep_running = true;
 uint32_t sampling_rate = 10; // Must match the sampling rate in Go to estimate total wire traffic
+uint64_t ring_drops = 0;     // Check if ring drops some packets
 
 static void signal_handler(int signum) {
     if (signum == SIGINT || signum == SIGTERM) {
-        printf("\n[Forwarder] Shutting down gracefully...\n");
+        printf("\n[Forwarder] Interrupt recieved. Shutting down...\n");
         keep_running = false;
     }
 }
@@ -121,6 +122,7 @@ int lcore_forwarder(__attribute__((unused)) void *arg) {
 
                     // Enqueue to the lockless ring for the Go Analyzer
                     if (unlikely(rte_ring_sp_enqueue(dump_ring, meta) < 0)) {
+                        ring_drops++;
                         rte_mempool_put(meta_pool, meta); // Drop metadata if ring is full
                     }
                 }
@@ -196,6 +198,20 @@ int main(int argc, char **argv) {
         rte_eal_mp_wait_lcore();
     }
 
+    printf("\n[Forwarder] Dump Ring drops count is %ld\n", ring_drops);
+
+    struct rte_eth_stats stats;
+    if (rte_eth_stats_get(port_id, &stats) == 0) {
+        printf("\n--- NIC DROP STATISTICS ---\n");
+        printf("RX Packets Received : %" PRIu64 "\n", stats.ipackets);
+        printf("TX Packets Sent     : %" PRIu64 "\n", stats.opackets);
+        
+        // 'imissed' represents packets dropped by the NIC because your RX ring was full
+        printf("RX Packets Dropped  : %" PRIu64 "\n", stats.imissed); 
+        
+        // 'oerrors' represents packets that failed to transmit
+        printf("TX Packets Dropped  : %" PRIu64 "\n", stats.oerrors);
+    }
 
     // 5. Teardown
     printf("\n[Forwarder] Stopping network ports...\n");

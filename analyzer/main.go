@@ -52,10 +52,8 @@ void free_meta(struct packet_meta *meta) {
 */
 import "C"
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -88,7 +86,8 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	peerMap := make(map[string]uint64)
+	// CHANGE 1: Use a fixed array as the map key instead of a string
+	peerMap := make(map[[16]byte]uint64)
 	var totalSampled uint64 = 0
 	
 	ticker := time.NewTicker(dumpIntervalSec * time.Second)
@@ -104,7 +103,8 @@ func main() {
 
 		case <-ticker.C:
 			printMetrics(peerMap, totalSampled, dumpIntervalSec)
-			peerMap = make(map[string]uint64)
+			// CHANGE 2: Re-initialize with the new array type
+			peerMap = make(map[[16]byte]uint64)
 			totalSampled = 0
 
 		default:
@@ -115,31 +115,20 @@ func main() {
 			}
 
 			totalSampled++
-			var srcIP net.IP
 
-			// Point directly to the first element of the flat C array
-			srcIPStartPointer := unsafe.Pointer(&cMeta.src_ip[0])
-
-			if cMeta.ip_version == 4 {
-				srcIP = C.GoBytes(srcIPStartPointer, 4)
-			} else if cMeta.ip_version == 6 {
-				srcIP = C.GoBytes(srcIPStartPointer, 16)
-			}
-
-			// Active usage of encoding/binary to resolve the unused import error
-			// Note: DPDK layers preserve Network Endianness, so we use BigEndian
-			srcPortBytes := C.GoBytes(unsafe.Pointer(&cMeta.src_port), 2)
-			_ = binary.BigEndian.Uint16(srcPortBytes) 
-
-			ipStr := srcIP.String()
-			peerMap[ipStr]++
+			// CHANGE 3: The Zero-Allocation Trick
+			// Cast the C memory directly to a Go array pointer. 
+			// Dereferencing it copies the 16 bytes straight into the map without hitting the heap.
+			ipArrayPtr := (*[16]byte)(unsafe.Pointer(&cMeta.src_ip[0]))
+			peerMap[*ipArrayPtr]++
 
 			C.free_meta(cMeta)
 		}
 	}
 }
 
-func printMetrics(peerMap map[string]uint64, totalSampled uint64, seconds int) {
+// CHANGE 4: Update the function signature to accept the new map type
+func printMetrics(peerMap map[[16]byte]uint64, totalSampled uint64, seconds int) {
 	fmt.Printf("\n--- TRAFFIC METRICS REPORT (Last %d Seconds) ---\n", seconds)
 	if totalSampled == 0 {
 		fmt.Println("No packets dumped in this window.")
