@@ -149,12 +149,12 @@ int main(int argc, char **argv) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    // 1. Initialize DPDK EAL as Primary Process
+    // Initialize DPDK EAL as Primary Process
     int ret = rte_eal_init(argc, argv);
     if (ret < 0) rte_exit(EXIT_FAILURE, "Error with EAL Initialization\n");
 
 
-    // 2. Allocate Shared Memory Resources
+    // Allocate Shared Memory Resources
     // These strings ("MBUF_POOL", "META_POOL", "DUMP_RING") must exactly match what Go looks up
     pktmbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS, MBUF_CACHE_SIZE,
                                            0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
@@ -168,7 +168,7 @@ int main(int argc, char **argv) {
     if (!dump_ring) rte_exit(EXIT_FAILURE, "Cannot create lockless ring\n");
 
 
-    // 3. Configure Network Port
+    // Configure Network Port
     uint16_t port_id = 0; // Hardcoded to port 0 for demonstration
     struct rte_eth_conf port_conf = { .rxmode = { .max_lro_pkt_size = RTE_ETHER_MAX_LEN } };
 
@@ -188,32 +188,38 @@ int main(int argc, char **argv) {
     printf("[Forwarder] Port %u initialized and running.\n", port_id);
 
 
-    // 4. Launch the Forwarder Loop on a worker core
+    // Launch the Forwarder Loop on a worker core
     unsigned int lcore_id = rte_get_next_lcore(rte_lcore_id(), 0, 0);
     if (lcore_id == RTE_MAX_LCORE) {
-        // Fallback to main core if no worker cores are provided via EAL args
+        printf("[Warning] Only 1 CPU core detected! Stats will only print upon exit.\n");
         lcore_forwarder(NULL);
     } else {
+        // Run data plane on worker core
         rte_eal_remote_launch(lcore_forwarder, NULL, lcore_id);
+        
+        // Run control plane (stats reporting) on main core
+        while (keep_running) {
+            sleep(5); // Print stats every 5 seconds
+            
+            if (!keep_running) break;
+
+            struct rte_eth_stats stats;
+            if (rte_eth_stats_get(port_id, &stats) == 0) {
+                printf("\n--- PERIODIC FORWARDER STATISTICS ---\n");
+                printf("RX Packets Received : %" PRIu64 "\n", stats.ipackets);
+                printf("TX Packets Sent     : %" PRIu64 "\n", stats.opackets);
+                printf("RX Packets Dropped  : %" PRIu64 "\n", stats.imissed); 
+                printf("TX Packets Dropped  : %" PRIu64 "\n", stats.oerrors);
+                printf("Dump Ring Drops     : %" PRIu64 "\n", ring_drops);
+                printf("-------------------------------------\n");
+            }
+        }
+        
+        // Wait for worker core to acknowledge the keep_running flag and exit
         rte_eal_mp_wait_lcore();
     }
 
-    printf("\n[Forwarder] Dump Ring drops count is %ld\n", ring_drops);
-
-    struct rte_eth_stats stats;
-    if (rte_eth_stats_get(port_id, &stats) == 0) {
-        printf("\n--- NIC DROP STATISTICS ---\n");
-        printf("RX Packets Received : %" PRIu64 "\n", stats.ipackets);
-        printf("TX Packets Sent     : %" PRIu64 "\n", stats.opackets);
-        
-        // 'imissed' represents packets dropped by the NIC because your RX ring was full
-        printf("RX Packets Dropped  : %" PRIu64 "\n", stats.imissed); 
-        
-        // 'oerrors' represents packets that failed to transmit
-        printf("TX Packets Dropped  : %" PRIu64 "\n", stats.oerrors);
-    }
-
-    // 5. Teardown
+    // Teardown
     printf("\n[Forwarder] Stopping network ports...\n");
     rte_eth_dev_stop(port_id);
     rte_eth_dev_close(port_id);
