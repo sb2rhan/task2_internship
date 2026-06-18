@@ -61,8 +61,19 @@ import (
 	"unsafe"
 )
 
-const samplingRate = 10
+const samplingRate    = 10
 const dumpIntervalSec = 10
+
+// ewmaAlpha=0.2 weights roughly the last 4–5 windows as the baseline.
+const ewmaAlpha = 0.2
+
+// Alert when either entropy metric drops more than 2 bits below its EWMA baseline.
+// 2 bits is large enough to ignore normal variance but catches focused floods.
+const alertDropBits = 2.0
+
+// EWMA state; -1.0 means uninitialised — first window sets the baseline directly.
+var ewmaShannon = -1.0
+var ewmaRenyi   = -1.0
 
 func main() {
 	args := []string{"go_analyzer", "--proc-type=secondary"}
@@ -86,14 +97,13 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// CHANGE 1: Use a fixed array as the map key instead of a string
 	peerMap := make(map[[16]byte]uint64)
-	var totalSampled uint64 = 0
-	
+	var totalSampled uint64
+
 	ticker := time.NewTicker(dumpIntervalSec * time.Second)
 	defer ticker.Stop()
 
-	fmt.Printf("[Analyzer] Starting analysis loop (Reporting every %d seconds)...\n", dumpIntervalSec)
+	fmt.Printf("[Analyzer] Starting analysis loop (reporting every %d seconds)...\n", dumpIntervalSec)
 
 	for {
 		select {
@@ -103,7 +113,6 @@ func main() {
 
 		case <-ticker.C:
 			printMetrics(peerMap, totalSampled, dumpIntervalSec)
-			// CHANGE 2: Re-initialize with the new array type
 			peerMap = make(map[[16]byte]uint64)
 			totalSampled = 0
 
@@ -115,36 +124,68 @@ func main() {
 			}
 
 			totalSampled++
-
-			// CHANGE 3: The Zero-Allocation Trick
-			// Cast the C memory directly to a Go array pointer. 
-			// Dereferencing it copies the 16 bytes straight into the map without hitting the heap.
+			// Direct cast into hugepage memory — no heap allocation, no copy.
 			ipArrayPtr := (*[16]byte)(unsafe.Pointer(&cMeta.src_ip[0]))
 			peerMap[*ipArrayPtr]++
-
 			C.free_meta(cMeta)
 		}
 	}
 }
 
-// CHANGE 4: Update the function signature to accept the new map type
 func printMetrics(peerMap map[[16]byte]uint64, totalSampled uint64, seconds int) {
 	fmt.Printf("\n--- TRAFFIC METRICS REPORT (Last %d Seconds) ---\n", seconds)
 	if totalSampled == 0 {
-		fmt.Println("No packets dumped in this window.")
+		fmt.Println("No packets sampled in this window.")
 		fmt.Println("---------------------------------------------------")
 		return
 	}
 
-	var entropy float64 = 0.0
+	n := float64(totalSampled)
+
+	// Shannon entropy: H = -Σ p·log₂(p)
+	// Maximised for uniform traffic (~log₂(unique IPs)); collapses toward 0 in a flood.
+	var shannon float64
+	// Rényi entropy α=2: H₂ = -log₂(Σ p²)
+	// More sensitive to dominant sources than Shannon — a single IP sending 90 % of
+	// traffic shows a larger drop here than in Shannon. Also cheaper: no log per IP.
+	var sumSq float64
 	for _, count := range peerMap {
-		probability := float64(count) / float64(totalSampled)
-		entropy -= probability * math.Log2(probability)
+		p := float64(count) / n
+		shannon -= p * math.Log2(p)
+		sumSq += p * p
+	}
+	renyi := -math.Log2(sumSq)
+
+	// Update EWMA baselines (or initialise on first window).
+	if ewmaShannon < 0 {
+		ewmaShannon = shannon
+		ewmaRenyi   = renyi
+	} else {
+		ewmaShannon = ewmaAlpha*shannon + (1-ewmaAlpha)*ewmaShannon
+		ewmaRenyi   = ewmaAlpha*renyi   + (1-ewmaAlpha)*ewmaRenyi
 	}
 
 	fmt.Printf("Total Packets Sampled : %d\n", totalSampled)
 	fmt.Printf("Estimated Wire Pkts   : %d\n", totalSampled*samplingRate)
 	fmt.Printf("Unique Source IPs     : %d\n", len(peerMap))
-	fmt.Printf("Traffic Source Entropy: %.4f\n", entropy)
+	fmt.Printf("Shannon Entropy       : %.4f bits  (baseline EWMA: %.4f)\n", shannon, ewmaShannon)
+	fmt.Printf("Rényi Entropy (α=2)   : %.4f bits  (baseline EWMA: %.4f)\n", renyi, ewmaRenyi)
+
+	// Anomaly detection: alert when either metric falls significantly below its baseline.
+	shannonDrop := ewmaShannon - shannon
+	renyiDrop   := ewmaRenyi   - renyi
+	anomaly := shannonDrop > alertDropBits || renyiDrop > alertDropBits
+	if anomaly {
+		fmt.Println()
+		fmt.Println("*** ANOMALY DETECTED ***")
+		if shannonDrop > alertDropBits {
+			fmt.Printf("  Shannon drop : %.4f bits below baseline (threshold %.1f)\n", shannonDrop, alertDropBits)
+		}
+		if renyiDrop > alertDropBits {
+			fmt.Printf("  Rényi drop   : %.4f bits below baseline (threshold %.1f)\n", renyiDrop, alertDropBits)
+		}
+		fmt.Println("  Possible cause: volumetric flood or scanning from concentrated sources.")
+	}
+
 	fmt.Println("---------------------------------------------------")
 }
